@@ -23,7 +23,13 @@ jobs:
           tmp_file="$(mktemp)"
           tmp_headers="$(mktemp)"
           trap 'rm -f "$tmp_file" "$tmp_headers"' EXIT
-          curl_args=(-sS -w '%{http_code}' -D "$tmp_headers" -o "$tmp_file" -A "Mozilla/5.0 (compatible; GitHub-Actions-Sync/1.0)")
+          curl_args=(
+            -sS -w '%{http_code}' -D "$tmp_headers" -o "$tmp_file"
+            -H "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            -H "Accept: application/json, text/plain, */*"
+            -H "Accept-Language: en-US,en;q=0.9"
+            -H "Referer: https://carbon.website/"
+          )
 
           old_etag="$(cat "$etag_file" 2>/dev/null || true)"
           if [ -n "$old_etag" ]; then
