@@ -1,0 +1,59 @@
+name: Sync info.json
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download latest info.json
+        id: update
+        run: |
+          set -euo pipefail
+          url="https://carbon.website/carbon/android-resources/dapps/info.json"
+          tmp_file="$(mktemp)"
+          tmp_etag="$(mktemp)"
+          curl -fsSI "$url" | awk 'BEGIN {IGNORECASE=1} /^etag:/ {print $2; exit}' | tr -d '\r' > "$tmp_etag"
+          if [ -s "$tmp_etag" ]; then
+            new_etag="$(cat "$tmp_etag")"
+            old_etag="$(cat info.etag 2>/dev/null || true)"
+            if [ "$new_etag" = "$old_etag" ]; then
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            curl -fsSL "$url" -o "$tmp_file"
+            mv "$tmp_file" info.json
+            printf '%s\n' "$new_etag" > info.etag
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            curl -fsSL "$url" -o "$tmp_file"
+            if [ -f info.json ] && cmp -s "$tmp_file" info.json; then
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+              rm "$tmp_file"
+            else
+              mv "$tmp_file" info.json
+              echo "changed=true" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      - name: Commit and push if updated
+        if: steps.update.outputs.changed == 'true'
+        env:
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: |
+          git config user.name "$GIT_AUTHOR_NAME"
+          git config user.email "$GIT_AUTHOR_EMAIL"
+          git add info.json info.etag
+          git commit -m "Update info.json from carbon website"
+          git push
