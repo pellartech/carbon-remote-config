@@ -8,41 +8,48 @@ INFO_FILE="info.json"
 ETAG_FILE="info.etag"
 
 cleanup() {
-  rm -f "${TMP_JSON:-}" "${TMP_ETAG:-}"
+  rm -f "${TMP_JSON:-}" "${TMP_HEADERS:-}"
 }
 trap cleanup EXIT
 
 TMP_JSON="$(mktemp)"
-TMP_ETAG="$(mktemp)"
+TMP_HEADERS="$(mktemp)"
 
-echo "Checking remote ETag..."
-if curl -fsSI "$URL" | awk 'BEGIN {IGNORECASE=1} /^etag:/ {print $2; exit}' | tr -d '\r' > "$TMP_ETAG"; then
-  if [ -s "$TMP_ETAG" ]; then
-    NEW_ETAG="$(cat "$TMP_ETAG")"
-    OLD_ETAG="$(cat "$ETAG_FILE" 2>/dev/null || true)"
-    if [ "$NEW_ETAG" = "$OLD_ETAG" ]; then
-      echo "ETag unchanged ($NEW_ETAG). Nothing to do."
-      exit 0
-    fi
-    echo "ETag changed from '${OLD_ETAG:-<none>}' to '$NEW_ETAG'. Downloading new info.json..."
-    curl -fsSL "$URL" -o "$TMP_JSON"
-    mv "$TMP_JSON" "$INFO_FILE"
-    printf '%s\n' "$NEW_ETAG" > "$ETAG_FILE"
-    echo "info.json updated and ETag stored."
-    exit 0
-  fi
-  echo "No ETag found in response; falling back to file comparison."
+OLD_ETAG="$(cat "$ETAG_FILE" 2>/dev/null || true)"
+
+echo "Requesting info.json (If-None-Match: ${OLD_ETAG:-<none>})..."
+CURL_ARGS=(-sS -w '%{http_code}' -D "$TMP_HEADERS" -o "$TMP_JSON")
+if [ -n "$OLD_ETAG" ]; then
+  HTTP_STATUS="$(curl "${CURL_ARGS[@]}" -H "If-None-Match: $OLD_ETAG" "$URL")"
 else
-  echo "Failed to fetch headers from $URL" >&2
-  exit 1
+  HTTP_STATUS="$(curl "${CURL_ARGS[@]}" "$URL")"
 fi
 
-curl -fsSL "$URL" -o "$TMP_JSON"
-if [ -f "$INFO_FILE" ] && cmp -s "$TMP_JSON" "$INFO_FILE"; then
-  echo "Remote info.json matches local copy. Nothing to do."
+if [ "$HTTP_STATUS" = "304" ]; then
+  echo "Remote ETag unchanged; local info.json is up to date."
   exit 0
 fi
 
+if [ "$HTTP_STATUS" != "200" ] && [ -n "$OLD_ETAG" ]; then
+  echo "Conditional request returned HTTP $HTTP_STATUS. Retrying without ETag header..."
+  : > "$TMP_HEADERS"
+  HTTP_STATUS="$(curl "${CURL_ARGS[@]}" "$URL")"
+fi
+
+if [ "$HTTP_STATUS" != "200" ]; then
+  echo "Unexpected HTTP status: $HTTP_STATUS" >&2
+  exit 1
+fi
+
+NEW_ETAG="$(awk 'BEGIN {IGNORECASE=1} /^etag:/ {print $2; exit}' "$TMP_HEADERS" | tr -d '\r')"
+
 mv "$TMP_JSON" "$INFO_FILE"
-rm -f "$ETAG_FILE"
-echo "info.json updated (ETag unavailable). Removed cached ETag."
+echo "info.json downloaded and saved."
+
+if [ -n "$NEW_ETAG" ]; then
+  printf '%s\n' "$NEW_ETAG" > "$ETAG_FILE"
+  echo "Stored new ETag: $NEW_ETAG"
+else
+  rm -f "$ETAG_FILE"
+  echo "No ETag returned; cleared cached ETag."
+fi

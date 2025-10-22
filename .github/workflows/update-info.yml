@@ -19,30 +19,46 @@ jobs:
         run: |
           set -euo pipefail
           url="https://carbon.website/carbon/android-resources/dapps/info.json"
+          etag_file="info.etag"
           tmp_file="$(mktemp)"
-          tmp_etag="$(mktemp)"
-          curl -fsSI "$url" | awk 'BEGIN {IGNORECASE=1} /^etag:/ {print $2; exit}' | tr -d '\r' > "$tmp_etag"
-          if [ -s "$tmp_etag" ]; then
-            new_etag="$(cat "$tmp_etag")"
-            old_etag="$(cat info.etag 2>/dev/null || true)"
-            if [ "$new_etag" = "$old_etag" ]; then
-              echo "changed=false" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            curl -fsSL "$url" -o "$tmp_file"
-            mv "$tmp_file" info.json
-            printf '%s\n' "$new_etag" > info.etag
-            echo "changed=true" >> "$GITHUB_OUTPUT"
+          tmp_headers="$(mktemp)"
+          trap 'rm -f "$tmp_file" "$tmp_headers"' EXIT
+          curl_args=(-sS -w '%{http_code}' -D "$tmp_headers" -o "$tmp_file")
+
+          old_etag="$(cat "$etag_file" 2>/dev/null || true)"
+          if [ -n "$old_etag" ]; then
+            status="$(curl "${curl_args[@]}" -H "If-None-Match: $old_etag" "$url")"
           else
-            curl -fsSL "$url" -o "$tmp_file"
-            if [ -f info.json ] && cmp -s "$tmp_file" info.json; then
-              echo "changed=false" >> "$GITHUB_OUTPUT"
-              rm "$tmp_file"
-            else
-              mv "$tmp_file" info.json
-              echo "changed=true" >> "$GITHUB_OUTPUT"
-            fi
+            status="$(curl "${curl_args[@]}" "$url")"
           fi
+
+          if [ "$status" = "304" ]; then
+            echo "Remote ETag matches local copy. Nothing to update."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$status" != "200" ] && [ -n "$old_etag" ]; then
+            echo "Conditional request returned HTTP $status. Retrying without ETag header."
+            : > "$tmp_headers"
+            status="$(curl "${curl_args[@]}" "$url")"
+          fi
+
+          if [ "$status" != "200" ]; then
+            echo "Unexpected HTTP status: $status" >&2
+            exit 1
+          fi
+
+          new_etag="$(awk 'BEGIN {IGNORECASE=1} /^etag:/ {print $2; exit}' "$tmp_headers" | tr -d '\r')"
+          mv "$tmp_file" info.json
+
+          if [ -n "$new_etag" ]; then
+            printf '%s\n' "$new_etag" > "$etag_file"
+          else
+            rm -f "$etag_file"
+          fi
+
+          echo "changed=true" >> "$GITHUB_OUTPUT"
 
       - name: Commit and push if updated
         if: steps.update.outputs.changed == 'true'
