@@ -23,7 +23,7 @@ jobs:
           tmp_file="$(mktemp)"
           tmp_headers="$(mktemp)"
           trap 'rm -f "$tmp_file" "$tmp_headers"' EXIT
-          curl_args=(-sS -w '%{http_code}' -D "$tmp_headers" -o "$tmp_file")
+          curl_args=(-sS -w '%{http_code}' -D "$tmp_headers" -o "$tmp_file" -A "Mozilla/5.0 (compatible; GitHub-Actions-Sync/1.0)")
 
           old_etag="$(cat "$etag_file" 2>/dev/null || true)"
           if [ -n "$old_etag" ]; then
